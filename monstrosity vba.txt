@@ -249,14 +249,20 @@ End Function
 ' Avoids false positives for sub/function/property definitions.
 '--------------------------------------------------
 Private Function IsProcedureCall(lineText As String) As Boolean
-    If Trim(lineText) = "" Then
+    Dim trimmedLine As String
+    trimmedLine = Trim(lineText)
+    If trimmedLine = "" Then
         IsProcedureCall = False
         Exit Function
     End If
-    Dim keywords As Variant
-    keywords = Array("if", "for", "while", "select", "end", "dim", "set", "exit", "loop", "sub", "function", "property")
+    
+    Dim words() As String
+    words = Split(trimmedLine, " ")
     Dim firstWord As String
-    firstWord = LCase(Split(lineText, " ")(0))
+    firstWord = LCase(words(0))
+    
+    Dim keywords As Variant
+    keywords = Array("if", "for", "while", "select", "end", "dim", "set", "exit", "loop", "sub", "function", "property", "else", "elseif")
     Dim k As Variant
     For Each k In keywords
         If firstWord = k Then
@@ -264,7 +270,19 @@ Private Function IsProcedureCall(lineText As String) As Boolean
             Exit Function
         End If
     Next k
-    IsProcedureCall = (InStr(lineText, "(") > 0) Or (InStr(LCase(lineText), "call ") > 0)
+    
+    ' If the line contains an "=" sign, assume it's an assignment.
+    If InStr(trimmedLine, "=") > 0 Then
+        IsProcedureCall = False
+        Exit Function
+    End If
+    
+    ' Assume it's a call if there is more than one token.
+    If UBound(words) >= 1 Then
+        IsProcedureCall = True
+    Else
+        IsProcedureCall = False
+    End If
 End Function
 
 '--------------------------------------------------
