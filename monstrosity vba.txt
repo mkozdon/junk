@@ -1,0 +1,497 @@
+Class Module: FlowNodeClass
+Create a new Class Module and name it FlowNodeClass. Then paste in:
+
+vba
+Kopiuj
+Edytuj
+Option Explicit
+
+' Represents one flowchart node.
+Public NodeName As String
+Public NodeType As String   ' "Process", "Decision", "Call", "Recursion", "Summary", etc.
+Public NodeText As String
+Class Module: ProcedureMetrics
+Create another Class Module and name it ProcedureMetrics. Then paste in:
+
+vba
+Kopiuj
+Edytuj
+Option Explicit
+
+' Holds analysis metrics for a procedure.
+Public ProcedureName As String
+Public LineCount As Long
+Public CyclomaticComplexity As Long
+Public CallCount As Long
+Public HasErrorHandling As Boolean
+Standard Module: FlowchartAnalyzer
+Create a new Module (for example, name it FlowchartAnalyzer) and paste in the code below:
+
+vba
+Kopiuj
+Edytuj
+Option Explicit
+
+'--- Enum for output type
+Public Enum FlowchartOutputType
+    fcExcel = 1
+    fcDrawIO = 2
+End Enum
+
+'--- Constants for analysis thresholds
+Public Const LONG_PROC_THRESHOLD As Long = 50
+Public Const COMPLEXITY_THRESHOLD As Long = 10
+
+' Global dictionary to cache metrics (requires "Microsoft Scripting Runtime" or late-bound Scripting.Dictionary)
+Dim gMetricsCache As Object
+
+'--------------------------------------------------
+' Entry point: analyzes the code and visualizes the flowchart.
+'   - StartProc: starting procedure name.
+'   - Depth: how many nested call levels to follow.
+'   - OutputType: fcExcel for Excel shapes or fcDrawIO for draw.io XML.
+'   - Optional TargetSheet: required for Excel output.
+'--------------------------------------------------
+Public Sub AnalyzeAndVisualizeFlowchart(StartProc As String, Depth As Long, OutputType As FlowchartOutputType, Optional TargetSheet As Worksheet)
+    Set gMetricsCache = CreateObject("Scripting.Dictionary")
+    Dim FlowNodes As Collection
+    Set FlowNodes = New Collection
+    
+    ' Build the flowchart structure recursively.
+    BuildFlowchart StartProc, Depth, FlowNodes, ""
+    
+    ' Output the flowchart.
+    If OutputType = fcExcel Then
+        If TargetSheet Is Nothing Then
+            MsgBox "Please provide a target worksheet.", vbExclamation
+            Exit Sub
+        End If
+        GenerateExcelFlowchart FlowNodes, TargetSheet
+    ElseIf OutputType = fcDrawIO Then
+        Dim xmlOutput As String
+        xmlOutput = GenerateDrawIOXML(FlowNodes)
+        SaveXMLToFile xmlOutput, "Flowchart.xml"
+        MsgBox "Flowchart XML saved as Flowchart.xml", vbInformation
+    End If
+    
+    ' Generate an overall analysis summary report.
+    GenerateAnalysisReport
+End Sub
+
+'--------------------------------------------------
+' Recursively parses a procedure’s code to build flow nodes and analyze metrics.
+' ParentProc is used to detect recursion.
+'--------------------------------------------------
+Private Sub BuildFlowchart(ProcName As String, Depth As Long, FlowNodes As Collection, Optional ParentProc As String = "")
+    Dim colLines As Collection
+    Set colLines = GetProcedureCode(ProcName)
+    If colLines Is Nothing Then
+        MsgBox "Procedure '" & ProcName & "' not found.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Analyze this procedure and cache its metrics.
+    Dim procMetrics As ProcedureMetrics
+    Set procMetrics = GetProcedureMetrics(ProcName, colLines)
+    If Not gMetricsCache.Exists(ProcName) Then
+        gMetricsCache.Add ProcName, procMetrics
+    End If
+    
+    Dim i As Long
+    For i = 1 To colLines.Count
+        Dim lineText As String
+        lineText = Trim(colLines(i))
+        Dim node As FlowNodeClass
+        Set node = New FlowNodeClass
+        
+        ' Identify a conditional statement.
+        If LCase(Left(lineText, 2)) = "if" Then
+            node.NodeName = "Decision_" & ProcName & "_" & i
+            node.NodeType = "Decision"
+            node.NodeText = "If " & ExtractCondition(lineText)
+            FlowNodes.Add node
+            
+        ' Identify a procedure call.
+        ElseIf InStr(LCase(lineText), "call ") > 0 Or IsProcedureCall(lineText) Then
+            Dim calledProc As String
+            calledProc = ExtractProcedureCall(lineText)
+            If calledProc <> "" Then
+                Set node = New FlowNodeClass
+                node.NodeName = "Call_" & calledProc & "_" & i
+                If calledProc = ProcName Or (ParentProc <> "" And calledProc = ParentProc) Then
+                    node.NodeType = "Recursion"
+                    node.NodeText = "Recursion call: " & calledProc
+                Else
+                    node.NodeType = "Call"
+                    node.NodeText = "Call: " & calledProc
+                End If
+                FlowNodes.Add node
+                
+                ' Follow called procedure if depth permits.
+                If Depth > 1 And node.NodeType <> "Recursion" Then
+                    BuildFlowchart calledProc, Depth - 1, FlowNodes, ProcName
+                End If
+            End If
+            
+        ' Treat any nonempty line as a process step.
+        ElseIf lineText <> "" Then
+            Set node = New FlowNodeClass
+            node.NodeName = "Process_" & ProcName & "_" & i
+            node.NodeType = "Process"
+            node.NodeText = lineText
+            FlowNodes.Add node
+        End If
+    Next i
+    
+    ' Add a summary node for the procedure’s metrics.
+    Dim summaryNode As FlowNodeClass
+    Set summaryNode = New FlowNodeClass
+    summaryNode.NodeName = "Summary_" & ProcName
+    summaryNode.NodeType = "Summary"
+    summaryNode.NodeText = "Procedure: " & ProcName & vbCrLf & _
+                            "Lines: " & procMetrics.LineCount & vbCrLf & _
+                            "Complexity: " & procMetrics.CyclomaticComplexity & vbCrLf & _
+                            "Calls: " & procMetrics.CallCount & vbCrLf & _
+                            "Error Handling: " & IIf(procMetrics.HasErrorHandling, "Yes", "No")
+    FlowNodes.Add summaryNode
+End Sub
+
+'--------------------------------------------------
+' Retrieves the code lines for a given procedure by scanning all VB components.
+'--------------------------------------------------
+Private Function GetProcedureCode(ProcName As String) As Collection
+    Dim colLines As New Collection
+    Dim comp As VBIDE.VBComponent
+    Dim codeMod As VBIDE.CodeModule
+    Dim found As Boolean: found = False
+    
+    Dim proj As VBIDE.VBProject
+    Set proj = ThisWorkbook.VBProject
+    Dim compIndex As Long
+    For compIndex = 1 To proj.VBComponents.Count
+        Set comp = proj.VBComponents(compIndex)
+        Set codeMod = comp.CodeModule
+        Dim lineNum As Long
+        For lineNum = 1 To codeMod.CountOfLines
+            Dim lineText As String
+            lineText = Trim(codeMod.Lines(lineNum, 1))
+            If (LCase(Left(lineText, 4)) = "sub " And LCase(lineText) Like "sub " & LCase(ProcName) & "*") Or _
+               (LCase(Left(lineText, 9)) = "function " And LCase(lineText) Like "function " & LCase(ProcName) & "*") Or _
+               (LCase(Left(lineText, 9)) = "property " And LCase(lineText) Like "property " & LCase(ProcName) & "*") Then
+                found = True
+                Dim startLine As Long, numLines As Long
+                startLine = lineNum
+                numLines = codeMod.ProcCountLines(ProcName, vbext_pk_Proc)
+                Dim procCode As String
+                procCode = codeMod.Lines(startLine, numLines)
+                Dim lines() As String
+                lines = Split(procCode, vbCrLf)
+                Dim j As Long
+                For j = LBound(lines) To UBound(lines)
+                    colLines.Add lines(j)
+                Next j
+                Exit For
+            End If
+        Next lineNum
+        If found Then Exit For
+    Next compIndex
+    
+    If Not found Then
+        Set GetProcedureCode = Nothing
+    Else
+        Set GetProcedureCode = colLines
+    End If
+End Function
+
+'--------------------------------------------------
+' Analyzes a procedure’s code and returns its metrics.
+'--------------------------------------------------
+Private Function GetProcedureMetrics(ProcName As String, colLines As Collection) As ProcedureMetrics
+    Dim metrics As New ProcedureMetrics
+    metrics.ProcedureName = ProcName
+    metrics.LineCount = colLines.Count
+    metrics.CyclomaticComplexity = 1 ' base complexity
+    Dim i As Long
+    For i = 1 To colLines.Count
+        Dim lineText As String
+        lineText = LCase(Trim(colLines(i)))
+        ' Increase complexity for each decision point.
+        If Left(lineText, 2) = "if" Then metrics.CyclomaticComplexity = metrics.CyclomaticComplexity + 1
+        If InStr(lineText, "for ") > 0 Then metrics.CyclomaticComplexity = metrics.CyclomaticComplexity + 1
+        If InStr(lineText, "while ") > 0 Then metrics.CyclomaticComplexity = metrics.CyclomaticComplexity + 1
+        If InStr(lineText, "select case") > 0 Then metrics.CyclomaticComplexity = metrics.CyclomaticComplexity + 1
+        If InStr(lineText, "do ") > 0 Then metrics.CyclomaticComplexity = metrics.CyclomaticComplexity + 1
+        
+        ' Count procedure calls.
+        If InStr(lineText, "call ") > 0 Or IsProcedureCall(lineText) Then metrics.CallCount = metrics.CallCount + 1
+        
+        ' Detect error handling.
+        If InStr(lineText, "on error") > 0 Then metrics.HasErrorHandling = True
+    Next i
+    Set GetProcedureMetrics = metrics
+End Function
+
+'--------------------------------------------------
+' Extracts the condition from an "If" statement.
+'--------------------------------------------------
+Private Function ExtractCondition(lineText As String) As String
+    Dim posThen As Long
+    posThen = InStr(1, LCase(lineText), "then")
+    If posThen > 0 Then
+        ExtractCondition = Trim(Mid(lineText, 3, posThen - 3))
+    Else
+        ExtractCondition = lineText
+    End If
+End Function
+
+'--------------------------------------------------
+' Heuristic to check if the line is likely a procedure call.
+'--------------------------------------------------
+Private Function IsProcedureCall(lineText As String) As Boolean
+    Dim keywords As Variant
+    keywords = Array("if", "for", "while", "select", "end", "dim", "set", "exit", "loop")
+    Dim firstWord As String
+    firstWord = LCase(Split(lineText, " ")(0))
+    Dim k As Variant
+    For Each k In keywords
+        If firstWord = k Then
+            IsProcedureCall = False
+            Exit Function
+        End If
+    Next k
+    IsProcedureCall = (InStr(lineText, "(") > 0) Or (InStr(LCase(lineText), "call ") > 0)
+End Function
+
+'--------------------------------------------------
+' Extracts the procedure name from a call line.
+'--------------------------------------------------
+Private Function ExtractProcedureCall(lineText As String) As String
+    Dim words() As String
+    words = Split(lineText, " ")
+    Dim procName As String
+    Dim i As Long
+    For i = 0 To UBound(words)
+        If LCase(words(i)) = "call" Then
+            If i + 1 <= UBound(words) Then
+                procName = words(i + 1)
+                Exit For
+            End If
+        End If
+    Next i
+    If procName = "" Then
+        procName = words(0)
+    End If
+    procName = Split(procName, "(")(0)
+    ExtractProcedureCall = procName
+End Function
+
+'--------------------------------------------------
+' Generates Excel shapes for the flowchart with enhanced visualization.
+' Nodes based on type are given distinct shapes and fill colors.
+' Summary nodes (with metrics) are color-coded if issues are detected.
+'--------------------------------------------------
+Private Sub GenerateExcelFlowchart(FlowNodes As Collection, TargetSheet As Worksheet)
+    Dim shp As Shape
+    Dim topPos As Double, leftPos As Double
+    topPos = 20
+    leftPos = 20
+    
+    Dim node As Variant
+    For Each node In FlowNodes
+        Dim shapeWidth As Double, shapeHeight As Double
+        shapeWidth = 200
+        shapeHeight = 60
+        
+        Dim shapeType As MsoAutoShapeType
+        Dim fillColor As Long
+        Select Case node.NodeType
+            Case "Decision"
+                shapeType = msoShapeDiamond
+                fillColor = RGB(200, 200, 255)
+            Case "Process"
+                shapeType = msoShapeFlowchartProcess
+                fillColor = RGB(200, 255, 200)
+            Case "Call"
+                shapeType = msoShapeFlowchartPredefinedProcess
+                fillColor = RGB(255, 255, 200)
+            Case "Recursion"
+                shapeType = msoShapeFlowchartConnector
+                fillColor = RGB(255, 200, 200)
+            Case "Summary"
+                shapeType = msoShapeRoundedRectangle
+                fillColor = RGB(240, 240, 240)
+            Case Else
+                shapeType = msoShapeRectangle
+                fillColor = RGB(220, 220, 220)
+        End Select
+        
+        Set shp = TargetSheet.Shapes.AddShape(shapeType, leftPos, topPos, shapeWidth, shapeHeight)
+        shp.TextFrame.Characters.Text = node.NodeText
+        
+        ' For summary nodes, adjust fill based on thresholds.
+        If node.NodeType = "Summary" Then
+            Dim linesCount As Long, complexity As Long
+            linesCount = CLng(GetValueFromSummary(node.NodeText, "Lines:"))
+            complexity = CLng(GetValueFromSummary(node.NodeText, "Complexity:"))
+            If linesCount > LONG_PROC_THRESHOLD Then
+                shp.Fill.ForeColor.RGB = RGB(255, 150, 150)   ' Red for long procedures.
+            ElseIf complexity > COMPLEXITY_THRESHOLD Then
+                shp.Fill.ForeColor.RGB = RGB(255, 200, 150)   ' Orange for high complexity.
+            Else
+                shp.Fill.ForeColor.RGB = fillColor
+            End If
+        Else
+            shp.Fill.ForeColor.RGB = fillColor
+        End If
+        
+        topPos = topPos + shapeHeight + 20
+    Next node
+End Sub
+
+'--------------------------------------------------
+' Helper: Extracts a numeric value from a summary node's text.
+'--------------------------------------------------
+Private Function GetValueFromSummary(summaryText As String, labelText As String) As String
+    Dim arr() As String
+    arr = Split(summaryText, vbCrLf)
+    Dim i As Long
+    For i = LBound(arr) To UBound(arr)
+        If InStr(arr(i), labelText) > 0 Then
+            GetValueFromSummary = Trim(Split(arr(i), ":")(1))
+            Exit Function
+        End If
+    Next i
+    GetValueFromSummary = "0"
+End Function
+
+'--------------------------------------------------
+' Generates a basic draw.io XML string using BPMN–like styling.
+'--------------------------------------------------
+Private Function GenerateDrawIOXML(FlowNodes As Collection) As String
+    Dim xml As String
+    xml = "<?xml version=""1.0"" encoding=""UTF-8""?>" & vbCrLf
+    xml = xml & "<mxfile host=""app.diagrams.net""><diagram name=""Flowchart"">" & vbCrLf
+    xml = xml & "<mxGraphModel>" & vbCrLf
+    xml = xml & "<root>" & vbCrLf
+    xml = xml & "<mxCell id=""0""/>" & vbCrLf
+    xml = xml & "<mxCell id=""1"" parent=""0""/>" & vbCrLf
+    
+    Dim id As Long: id = 2
+    Dim node As Variant
+    Dim yPos As Long: yPos = 20
+    For Each node In FlowNodes
+        Dim shapeLabel As String
+        shapeLabel = node.NodeText
+        Dim shapeStyle As String
+        Select Case node.NodeType
+            Case "Decision"
+                shapeStyle = "rhombus"
+            Case "Process"
+                shapeStyle = "rounded=0"
+            Case "Call"
+                shapeStyle = "shape=process"
+            Case "Recursion"
+                shapeStyle = "ellipse"
+            Case "Summary"
+                shapeStyle = "shape=note"
+            Case Else
+                shapeStyle = ""
+        End Select
+        
+        xml = xml & "<mxCell id=""" & id & """ value=""" & shapeLabel & """ style=""" & shapeStyle & """ vertex=""1"" parent=""1"">" & vbCrLf
+        xml = xml & "<mxGeometry x=""100"" y=""" & yPos & """ width=""200"" height=""80"" as=""geometry""/>" & vbCrLf
+        xml = xml & "</mxCell>" & vbCrLf
+        id = id + 1
+        yPos = yPos + 100
+    Next node
+    
+    xml = xml & "</root>" & vbCrLf
+    xml = xml & "</mxGraphModel>" & vbCrLf
+    xml = xml & "</diagram></mxfile>"
+    
+    GenerateDrawIOXML = xml
+End Function
+
+'--------------------------------------------------
+' Saves the provided XML string to a file in the same folder as the workbook.
+'--------------------------------------------------
+Private Sub SaveXMLToFile(xmlContent As String, fileName As String)
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Dim fileStream As Object
+    Dim fPath As String
+    fPath = ThisWorkbook.Path & "\" & fileName
+    Set fileStream = fso.CreateTextFile(fPath, True)
+    fileStream.Write xmlContent
+    fileStream.Close
+End Sub
+
+'--------------------------------------------------
+' Generates an overall analysis summary report in a new worksheet.
+'--------------------------------------------------
+Private Sub GenerateAnalysisReport()
+    Dim wsReport As Worksheet
+    On Error Resume Next
+    Set wsReport = ThisWorkbook.Worksheets("AnalysisReport")
+    On Error GoTo 0
+    If wsReport Is Nothing Then
+        Set wsReport = ThisWorkbook.Worksheets.Add
+        wsReport.Name = "AnalysisReport"
+    End If
+    wsReport.Cells.Clear
+    
+    wsReport.Range("A1") = "Procedure Name"
+    wsReport.Range("B1") = "Line Count"
+    wsReport.Range("C1") = "Cyclomatic Complexity"
+    wsReport.Range("D1") = "Call Count"
+    wsReport.Range("E1") = "Has Error Handling"
+    wsReport.Range("F1") = "Issues"
+    
+    Dim rowIndex As Long
+    rowIndex = 2
+    Dim key As Variant
+    For Each key In gMetricsCache.Keys
+        Dim metrics As ProcedureMetrics
+        Set metrics = gMetricsCache(key)
+        wsReport.Cells(rowIndex, 1) = metrics.ProcedureName
+        wsReport.Cells(rowIndex, 2) = metrics.LineCount
+        wsReport.Cells(rowIndex, 3) = metrics.CyclomaticComplexity
+        wsReport.Cells(rowIndex, 4) = metrics.CallCount
+        wsReport.Cells(rowIndex, 5) = IIf(metrics.HasErrorHandling, "Yes", "No")
+        Dim issues As String
+        issues = ""
+        If metrics.LineCount > LONG_PROC_THRESHOLD Then
+            issues = issues & "Long procedure; "
+        End If
+        If metrics.CyclomaticComplexity > COMPLEXITY_THRESHOLD Then
+            issues = issues & "High complexity; "
+        End If
+        If Not metrics.HasErrorHandling Then
+            issues = issues & "Missing error handling; "
+        End If
+        wsReport.Cells(rowIndex, 6) = issues
+        rowIndex = rowIndex + 1
+    Next key
+    
+    wsReport.Columns.AutoFit
+End Sub
+Usage Example
+To start analysis on an existing procedure (for example, "MyProcedure") and generate the flowchart as Excel shapes on a worksheet named "FlowSheet", run:
+
+vba
+Kopiuj
+Edytuj
+Sub TestAnalysisAndFlowchart()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("FlowSheet")
+    ' fcExcel = 1 (as defined in FlowchartOutputType)
+    AnalyzeAndVisualizeFlowchart "MyProcedure", 2, fcExcel, ws
+End Sub
+Alternatively, to export as draw.io XML, use:
+
+vba
+Kopiuj
+Edytuj
+Sub TestAnalysisAndFlowchartXML()
+    AnalyzeAndVisualizeFlowchart "MyProcedure", 2, fcDrawIO
+End Sub
